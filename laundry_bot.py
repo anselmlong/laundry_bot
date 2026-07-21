@@ -264,6 +264,77 @@ def estimate_drying(temp, humid, wind, periods, uv, nowcast_cond):
     else:             l="Don't Bother ❌"; hrs="Won't dry well today"
     return {"label":l,"hours":hrs,"score":round(total)}
 
+def first_rain_hour_today(day):
+    """Start hour of the earliest rainy period today that hasn't ended yet, else None."""
+    now = datetime.datetime.now(SGT)
+    today = now.strftime("%a")
+    best = None
+    for p in day.get("periods", []):
+        if p["safe"] or p.get("day") != today:
+            continue
+        try:
+            start_h = int(p["label"].split("-")[0].split(":")[0])
+            end_h = int(p["label"].split("-")[1].split(":")[0])
+        except (ValueError, IndexError):
+            continue
+        if end_h > start_h and end_h <= now.hour:
+            continue  # period already over
+        if best is None or start_h < best:
+            best = start_h
+    return best
+
+
+def tomorrow_outlook(day):
+    """One-liner about tomorrow if it looks good for drying, else None."""
+    tomorrow = (datetime.datetime.now(SGT) + timedelta(days=1)).strftime("%Y-%m-%d")
+    for f in day.get("d4_forecasts", []):
+        if f.get("date") == tomorrow:
+            if f.get("forecast") and not is_rainy(f["forecast"]):
+                return f"☀️ Tomorrow looks better — {f['forecast']}, {f['temp_low']}–{f['temp_high']}°C"
+            return None
+    return None
+
+
+def fmt_summary(day):
+    """Short verdict-first report: can I hang laundry today, and until when?"""
+    now = datetime.datetime.now(SGT)
+    area = day.get("area", REGION_TO_AREA.get(day["region"], DEFAULT_AREA))
+    d = day["drying"]
+    rain = day.get("rain_expected", False)
+    rain_start = first_rain_hour_today(day)
+    hrs_left = rain_start - (now.hour + now.minute / 60) if rain_start is not None else None
+
+    lines = [f"🧺 *{area}* · {now.strftime('%a %d %b')}", ""]
+
+    if d["score"] < 25:
+        lines.append("❌ *Skip outdoor drying* — won't dry well today")
+        tm = tomorrow_outlook(day)
+        if tm: lines.append(tm)
+    elif rain and hrs_left is not None and hrs_left <= 0:
+        lines.append("❌ *Skip outdoor drying* — rain expected around now")
+        tm = tomorrow_outlook(day)
+        if tm: lines.append(tm)
+    elif rain and hrs_left is not None and hrs_left < 2:
+        lines.append(f"❌ *Skip outdoor drying* — rain expected from {fmt12(rain_start)}")
+        tm = tomorrow_outlook(day)
+        if tm: lines.append(tm)
+    elif rain and hrs_left is not None and hrs_left < 4:
+        lines.append(f"⚠️ *Risky* — dry until {fmt12(rain_start)} only ({d['hours']} to dry)")
+        lines.append("An indoor rack is the safer bet.")
+    elif rain and rain_start is not None:
+        lines.append(f"✅ *Hang it out* — dries in {d['hours']}")
+        lines.append(f"🌧 Rain expected from {fmt12(rain_start)} — bring it in by then")
+    elif rain:
+        lines.append(f"⚠️ *Risky* — showers possible today ({d['hours']} to dry)")
+        lines.append("Keep an eye out, or use an indoor rack.")
+    elif d["score"] < 40:
+        lines.append(f"⚠️ *Slow drying* — {d['hours']}, but no rain expected")
+    else:
+        lines.append(f"✅ *Hang it out* — dries in {d['hours']}, no rain expected")
+
+    return "\n".join(lines)
+
+
 def fmt_label(s):
     if not s or s=="?": return s
     try:
@@ -378,11 +449,20 @@ def fmt_report(day):
     return "\n".join(lines)
 
 
-def report_kb():
-    """Inline keyboard for report messages."""
+def summary_kb():
+    """Inline keyboard for the short summary message."""
     return InlineKeyboardMarkup([
-        [InlineKeyboardButton("🔄 Refresh", callback_data="act:refresh"),
+        [InlineKeyboardButton("📊 Details", callback_data="act:details"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="act:refresh"),
          InlineKeyboardButton("📍 Region", callback_data="act:region")]
+    ])
+
+
+def details_kb():
+    """Inline keyboard for the expanded full report."""
+    return InlineKeyboardMarkup([
+        [InlineKeyboardButton("◀ Back", callback_data="act:back"),
+         InlineKeyboardButton("🔄 Refresh", callback_data="act:refresh_d")]
     ])
 
 
@@ -522,7 +602,7 @@ async def location_handler(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
             await u.message.reply_text(
                 f"📍 Updated to *{area}* ({region.title()})!",
                 parse_mode="Markdown", reply_markup=main_kb())
-            await u.message.reply_text(fmt_report(day), parse_mode="Markdown", reply_markup=report_kb())
+            await u.message.reply_text(fmt_summary(day), parse_mode="Markdown", reply_markup=summary_kb())
         except Exception as ex:
             log.exception("location report failed")
             await u.message.reply_text(f"📍 Updated to *{area}* ({region.title()})", parse_mode="Markdown")
@@ -597,7 +677,7 @@ async def text_handler(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
             try:
                 d24, d2, uv, d4 = fetch_cached()
                 day = assess_day(d24, d2, uv, region, area, d4)
-                await u.message.reply_text(fmt_report(day), parse_mode="Markdown", reply_markup=report_kb())
+                await u.message.reply_text(fmt_summary(day), parse_mode="Markdown", reply_markup=summary_kb())
             except Exception as ex:
                 log.exception("area report failed")
         return
@@ -652,7 +732,7 @@ async def now_cmd(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
     try:
         d24, d2, uv, d4 = fetch_cached()
         day=assess_day(d24,d2,uv,e.get("region",DEFAULT_REGION),e.get("area"), d4)
-        await u.message.reply_text(fmt_report(day), parse_mode="Markdown", reply_markup=report_kb())
+        await u.message.reply_text(fmt_summary(day), parse_mode="Markdown", reply_markup=summary_kb())
     except Exception as ex:
         log.exception("check failed")
         await u.message.reply_text(f"❌ {ex}")
@@ -682,7 +762,7 @@ async def region_cb(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
         try:
             d24, d2, uv, d4 = fetch_cached()
             day = assess_day(d24, d2, uv, r, entry.get("area"), d4)
-            await q.edit_message_text(fmt_report(day), parse_mode="Markdown", reply_markup=report_kb())
+            await q.edit_message_text(fmt_summary(day), parse_mode="Markdown", reply_markup=summary_kb())
         except Exception as ex:
             log.exception("region change report failed")
             await q.edit_message_text(f"✅ Region: *{r.title()}*")
@@ -740,25 +820,40 @@ async def users_cmd(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
         lines.append(f"  • `{cid[-4:]}` · {r} · {t} · since {since}")
     await u.message.reply_text("\n".join(lines), parse_mode="Markdown")
 
+async def _safe_edit(q, text, kb):
+    """edit_message_text, ignoring Telegram's 'message is not modified' error."""
+    try:
+        await q.edit_message_text(text, parse_mode="Markdown", reply_markup=kb)
+    except Exception as ex:
+        if "not modified" not in str(ex).lower():
+            raise
+
+
 async def action_cb(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
-    """Handle report inline buttons: refresh, change region."""
+    """Handle report inline buttons: details/back, refresh, change region."""
     q = u.callback_query; await q.answer()
     action = q.data[4:]  # strip "act:"
     cid = str(q.message.chat_id)
     subs = load_subs()
     e = subs.get(cid, {"region": DEFAULT_REGION})
 
-    if action == "refresh":
-        try:
-            d24, d2, uv, d4 = fetch_cached()
-            day = assess_day(d24, d2, uv, e.get("region", DEFAULT_REGION), e.get("area"), d4)
-            await q.edit_message_text(fmt_report(day), parse_mode="Markdown", reply_markup=report_kb())
-        except Exception as ex:
-            log.exception("refresh failed")
-            await q.edit_message_text(f"❌ {ex}")
-    elif action == "region":
+    if action == "region":
         kb = InlineKeyboardMarkup([[InlineKeyboardButton(r.title(), callback_data=f"reg:{r}")] for r in REGIONS])
         await q.edit_message_text("📍 *Pick your region:*", parse_mode="Markdown", reply_markup=kb)
+        return
+
+    try:
+        d24, d2, uv, d4 = fetch_cached()
+        day = assess_day(d24, d2, uv, e.get("region", DEFAULT_REGION), e.get("area"), d4)
+    except Exception as ex:
+        log.exception("action %s failed", action)
+        await q.edit_message_text(f"❌ {ex}")
+        return
+
+    if action in ("details", "refresh_d"):
+        await _safe_edit(q, fmt_report(day), details_kb())
+    else:  # refresh, back
+        await _safe_edit(q, fmt_summary(day), summary_kb())
 
 # ── Scheduled ──
 async def dispatch_report(ctx: ContextTypes.DEFAULT_TYPE):
@@ -774,7 +869,7 @@ async def dispatch_report(ctx: ContextTypes.DEFAULT_TYPE):
             continue
         try:
             day=assess_day(d24,d2,uv,entry.get("region",DEFAULT_REGION),entry.get("area"), d4)
-            await ctx.bot.send_message(chat_id=cid, text=fmt_report(day), parse_mode="Markdown", reply_markup=report_kb())
+            await ctx.bot.send_message(chat_id=cid, text=fmt_summary(day), parse_mode="Markdown", reply_markup=summary_kb())
             log.info("Sent to %s", cid)
         except Exception as ex: log.exception("fail %s",cid)
 
