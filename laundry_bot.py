@@ -562,7 +562,8 @@ async def cb(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
         t = data[4:]
         if t == "Custom ⌨️":
             await q.edit_message_text(
-                "Type the time you want your reminder (e.g. `7:30 AM` or `10:15 AM`):",
+                "Type the time you want your reminder, on the hour or half-hour between "
+                "7:00 AM and 11:30 AM (e.g. `7:30 AM` or `10:30 AM`):",
                 parse_mode="Markdown")
             ctx.user_data["awaiting_custom_time"] = True
             return
@@ -700,11 +701,17 @@ async def text_handler(u:Update, ctx:ContextTypes.DEFAULT_TYPE):
     if ctx.user_data.get("awaiting_custom_time"):
         t = parse_time12(text) or parse_time24(text)
         if t is None:
-            await u.message.reply_text("Sorry, I didn't get that. Try `7:30 AM` or `10:15 AM`:",
+            await u.message.reply_text("Sorry, I didn't get that. Try `7:30 AM` or `10:30 AM`:",
                                         parse_mode="Markdown")
             return
         h = int(t); m = int(round((t - h) * 60))
         if m == 60: h+=1; m=0
+        # Reports only go out at the half-hour slots set up in schedule_jobs
+        if not (7 <= h <= 11 and m in (0, 30)):
+            await u.message.reply_text(
+                "I can only send reports on the hour or half-hour between 7:00 AM and 11:30 AM. "
+                "Try `7:30 AM` or `10:30 AM`:", parse_mode="Markdown")
+            return
         ampm = "AM" if h<12 or h==24 else "PM"
         h12 = h if h<=12 else h-12
         if h12==0: h12=12
