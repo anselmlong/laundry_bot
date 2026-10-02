@@ -864,7 +864,8 @@ async def dispatch_report(ctx: ContextTypes.DEFAULT_TYPE):
         log.error("fetch fail: %s",e); return
     subs=load_subs()
     for cid,entry in subs.items():
-        t = parse_time12(entry.get("laundry_time","9:00 AM"))
+        # No default time: people who never picked one didn't finish signing up
+        t = parse_time12(entry.get("laundry_time") or "")
         if t is None or abs(t - hour) > 0.03:  # ~2min tolerance
             continue
         try:
