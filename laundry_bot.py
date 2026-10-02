@@ -504,7 +504,10 @@ async def rain_alert_check(ctx: ContextTypes.DEFAULT_TYPE):
         area = entry.get("area", REGION_TO_AREA.get(region, DEFAULT_AREA))
         day = assess_day(d24, d2, uv, region, area, d4)
 
-        if not day.get("rain_expected"):
+        # Only alert when the 2-hour nowcast for their area shows rain, not
+        # whenever the 24h forecast mentions rain somewhere later in the day
+        nc = (day.get("nowcast", {}).get("forecast", "") or "").lower()
+        if not any(k in nc for k in ["shower", "rain", "thunder", "storm"]):
             continue
 
         # Dedup: don't spam within RAIN_ALERT_INTERVAL
@@ -518,7 +521,7 @@ async def rain_alert_check(ctx: ContextTypes.DEFAULT_TYPE):
             text = (
                 "🌧️ *Rain Alert!* 🌧️\n\n"
                 f"Rain is expected in *{area}* soon! "
-                "If you have laundry drying outside, **bring it in now!** 🧺💨"
+                "If you have laundry drying outside, *bring it in now!* 🧺💨"
             )
             await ctx.bot.send_message(chat_id=int(cid), text=text, parse_mode="Markdown")
             alerts[cid] = {"day": today, "ts": now_ts}
